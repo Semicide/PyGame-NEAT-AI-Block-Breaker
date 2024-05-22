@@ -1,177 +1,198 @@
 import pygame
-import neat
-import os
 import random
+import os
+import neat
 import pickle
+import sys
+import matplotlib.pyplot as plt
 
-# Constants
-SCREEN_WIDTH, SCREEN_HEIGHT = 800, 600
-FOOD_COUNT = 20
-OBSTACLE_COUNT = 10
+# Define colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+RED = (255, 0, 0)
+GREEN = (0, 255, 0)
+BLUE = (0, 0, 255)
 
-class Environment:
-    def __init__(self, width, height):
-        self.width = width
-        self.height = height
-        self.food = []
-        self.obstacles = []
-        self.death_zones = []
+# Define constants
+SCREEN_WIDTH = 800
+SCREEN_HEIGHT = 600
+PADDLE_WIDTH = 100
+PADDLE_HEIGHT = 20
+BALL_SIZE = 20
+BLOCK_WIDTH = SCREEN_WIDTH // 10  # Ensuring full screen coverage
+BLOCK_HEIGHT = 30
+BLOCK_ROWS = 5
+BLOCK_COLS = 10
+BLOCK_COLORS = [RED, GREEN, BLUE]
 
-    def generate_food(self):
-        self.food = []
-        for _ in range(FOOD_COUNT):
-            x = random.randint(0, self.width - 10)
-            y = random.randint(0, self.height - 10)
-            self.food.append(pygame.Rect(x, y, 10, 10))
 
-    def generate_obstacles(self):
-        self.obstacles = []
-        for _ in range(OBSTACLE_COUNT):
-            x = random.randint(0, self.width - 50)
-            y = random.randint(0, self.height - 50)
-            self.obstacles.append(pygame.Rect(x, y, 50, 50))
+class BlockBreakerGame:
+    def __init__(self):
+        pygame.init()
+        self.screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+        pygame.display.set_caption("Block Breaker")
 
-    def generate_death_zones(self):
-        self.death_zones = []
-        for _ in range(OBSTACLE_COUNT):
-            x = random.randint(0, self.width - 100)
-            y = random.randint(0, self.height - 100)
-            self.death_zones.append(pygame.Rect(x, y, 100, 100))  # Adjust size to 100x100
+        self.clock = pygame.time.Clock()
+        self.font = pygame.font.SysFont(None, 36)
 
-    def draw(self, screen):
-        for food in self.food:
-            pygame.draw.rect(screen, (0, 255, 0), food)
-        for obstacle in self.obstacles:
-            pygame.draw.rect(screen, (255, 0, 0), obstacle)
-        for death_zone in self.death_zones:
-            pygame.draw.rect(screen, (0, 0, 0), death_zone)
+        self.paddle = pygame.Rect((SCREEN_WIDTH - PADDLE_WIDTH) // 2, SCREEN_HEIGHT - PADDLE_HEIGHT - 10, PADDLE_WIDTH, PADDLE_HEIGHT)
+        self.ball = pygame.Rect(SCREEN_WIDTH // 2 - BALL_SIZE // 2, SCREEN_HEIGHT // 2 - BALL_SIZE // 2, BALL_SIZE, BALL_SIZE)
+        self.ball_velocity = [random.choice([-5, 5]), 5]  # Random initial velocity
 
-class Agent:
-    def __init__(self, x, y):
-        self.rect = pygame.Rect(x, y, 20, 20)
-        self.energy = 100
-        self.alive = True
+        self.blocks = []
+        self.create_blocks()
+        self.score = 0
 
-    def move(self, action):
-        if action == 0:  # Up
-            self.rect.y -= 5
-        elif action == 1:  # Down
-            self.rect.y += 5
-        elif action == 2:  # Left
-            self.rect.x -= 5
-        elif action == 3:  # Right
-            self.rect.x += 5
+    def create_blocks(self):
+        self.blocks.clear()
+        for row in range(BLOCK_ROWS):
+            for col in range(BLOCK_COLS):
+                block_color = random.choice(BLOCK_COLORS)
+                block = pygame.Rect(col * BLOCK_WIDTH, row * BLOCK_HEIGHT, BLOCK_WIDTH, BLOCK_HEIGHT)
+                self.blocks.append((block, block_color))
 
-        # Keep the agent within the screen bounds
-        if self.rect.x < 0:
-            self.rect.x = 0
-        elif self.rect.x > SCREEN_WIDTH - self.rect.width:
-            self.rect.x = SCREEN_WIDTH - self.rect.width
+    def update(self, net):
+        # Get inputs for the neural network
+        inputs = (self.paddle.x, self.ball.x, self.ball.y, self.ball_velocity[0], self.ball_velocity[1])
+        output = net.activate(inputs)
+        decision = output.index(max(output))
 
-        if self.rect.y < 0:
-            self.rect.y = 0
-        elif self.rect.y > SCREEN_HEIGHT - self.rect.height:
-            self.rect.y = SCREEN_HEIGHT - self.rect.height
+        # Move paddle based on the neural network's decision
+        if decision == 0:  # Move left
+            self.paddle.x -= 15
+        elif decision == 1:  # Move right
+            self.paddle.x += 15
+        elif decision == 2:  # Do nothing
+            pass
 
-    def update(self, environment):
-        if not self.alive:
-            return
+        # Ensure paddle stays within screen bounds
+        if self.paddle.left < 0:
+            self.paddle.left = 0
+        if self.paddle.right > SCREEN_WIDTH:
+            self.paddle.right = SCREEN_WIDTH
 
-        food_index = self.rect.collidelist(environment.food)
-        if food_index != -1:
-            environment.food.pop(food_index)  # Remove the collided food
-            self.energy += 50  # Increase energy on eating food
+        # Update ball position
+        self.ball.x += self.ball_velocity[0]
+        self.ball.y += self.ball_velocity[1]
 
-        obstacle_index = self.rect.collidelist(environment.obstacles)
-        if obstacle_index != -1:
-            self.energy -= 10  # Decrease energy on hitting an obstacle
+        # Ball collisions with walls
+        if self.ball.left < 0 or self.ball.right > SCREEN_WIDTH:
+            self.ball_velocity[0] *= -1
+        if self.ball.top < 0:
+            self.ball_velocity[1] *= -1
 
-        death_zone_index = self.rect.collidelist(environment.death_zones)
-        if death_zone_index != -1:
-            self.alive = False  # Kill agent in death zone
+        # Ball collision with paddle
+        if self.ball.colliderect(self.paddle):
+            self.ball_velocity[1] *= -1
 
-        self.energy -= 1  # Energy decreases over time
-        if self.energy <= 0:
-            self.alive = False  # Agent dies if energy depletes
+        # Ball collision with blocks
+        for block, _ in self.blocks:
+            if self.ball.colliderect(block):
+                self.blocks.remove((block, _))
+                self.ball_velocity[1] *= -1
+                self.score += 1
 
-    def draw(self, screen):
-        pygame.draw.rect(screen, (0, 0, 255), self.rect)
+        # Check for game over or win
+        if self.ball.bottom >= SCREEN_HEIGHT:
+            return True  # Game over
+        if not self.blocks:
+            print("You win!")
+            return True  # Win condition
+        return False
 
-def eval_genomes(genomes, config):
-    width, height = SCREEN_WIDTH, SCREEN_HEIGHT
-    env = Environment(width, height)
-    env.generate_food()
-    env.generate_obstacles()
-    env.generate_death_zones()
+    def draw(self):
+        self.screen.fill(BLACK)
+        pygame.draw.rect(self.screen, WHITE, self.paddle)
+        pygame.draw.ellipse(self.screen, WHITE, self.ball)
+        for block, color in self.blocks:
+            pygame.draw.rect(self.screen, color, block)
+        score_text = self.font.render(f"Score: {self.score}", True, WHITE)
+        self.screen.blit(score_text, (10, 10))
 
-    pygame.init()
-    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
-    clock = pygame.time.Clock()
-
-    agents = []
-    for genome_id, genome in genomes:
-        genome.fitness = 0
-        net = neat.nn.FeedForwardNetwork.create(genome, config)
-        agent = Agent(width // 2, height // 2)
-        agents.append((agent, genome, net))
-
-    run_simulation = True
-    while run_simulation:
+    def handle_events(self):
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 pygame.quit()
-                exit()
+                sys.exit()
 
-        screen.fill((255, 255, 255))
-        env.draw(screen)
 
-        all_dead = True  # Reset flag at the start of each generation
-        for agent, genome, net in agents:
-            if agent.alive:
-                all_dead = False  # Set to False if any agent is alive
-                inputs = [agent.rect.x, agent.rect.y, agent.energy]
-                for food in env.food:
-                    inputs.extend([food.x, food.y])
-                for obstacle in env.obstacles:
-                    inputs.extend([obstacle.x, obstacle.y])
-                for death_zone in env.death_zones:
-                    inputs.extend([death_zone.x, death_zone.y])
+def eval_genomes(genomes, config):
+    for genome_id, genome in genomes:
+        genome.fitness = 0
+        net = neat.nn.FeedForwardNetwork.create(genome, config)
+        game = BlockBreakerGame()
 
-                # Ensure the number of inputs matches the expected size by padding with zeros if necessary
-                while len(inputs) < 83:
-                    inputs.append(0)
+        while True:
+            game.handle_events()
+            game_over = game.update(net)
+            game.draw()
+            pygame.display.flip()
+            game.clock.tick(240)  # Increase the game speed
 
-                action = net.activate(inputs)
-                agent.move(action.index(max(action)))
-                agent.update(env)
-                genome.fitness += agent.energy
+            if game_over:
+                break
 
-            agent.draw(screen)
+        genome.fitness = game.score
 
-        pygame.display.update()
-        clock.tick(30)
 
-        if all_dead:
-            run_simulation = False  # End simulation if all agents are dead
+def run_neat(config_path, load_winner=False):
+    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet, neat.DefaultStagnation, config_path)
 
-def run_neat(config_file):
-    config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction, neat.DefaultSpeciesSet,
-                                neat.DefaultStagnation, config_file)
-    p = neat.Population(config)
+    if load_winner and os.path.exists(selected_model + '.pkl'):
+        with open(selected_model + '.pkl', 'rb') as f:
+            winner = pickle.load(f)
 
-    p.add_reporter(neat.StdOutReporter(True))
-    stats = neat.StatisticsReporter()
-    p.add_reporter(stats)
-    p.add_reporter(neat.Checkpointer(5))
+    else:
+        # Create the population, which is the top-level object for a NEAT run.
+        p = neat.Population(config)
 
-    winner = p.run(eval_genomes, 50)
+        # Add a stdout reporter to show progress in the terminal.
+        p.add_reporter(neat.StdOutReporter(True))
+        stats = neat.StatisticsReporter()
+        p.add_reporter(stats)
+        best_fitnesses = []
 
-    with open('winner.pkl', 'wb') as f:
-        pickle.dump(winner, f)
+        # Run indefinitely until manually stopped
+        generation = 0
+        while True:
+            generation += 1
+            winner = p.run(eval_genomes, 1)
 
-    print(f'\nBest genome:\n{winner}')
+            # Save the winner after each generation with unique filename
+            with open(f'winner_gen_{generation}.pkl', 'wb') as f:
+                pickle.dump(winner, f)
+            best_fitnesses.append(winner.fitness)
+
+            print(f'\nBest genome after generation {generation}:\n{winner}')
+            plt.plot(best_fitnesses)
+            plt.xlabel('Generation')
+            plt.ylabel('Best Fitness')
+            plt.title('Best Fitness Over Generations')
+            plt.savefig('fitness_plot.png')
+            plt.show()  # Add this line to display the plot window
+            plt.close()
+    # Play the game with the best network
+    winner_net = neat.nn.FeedForwardNetwork.create(winner, config)
+    game = BlockBreakerGame()
+
+    while True:
+        game.handle_events()
+        game_over = game.update(winner_net)
+        game.draw()
+        pygame.display.flip()
+        game.clock.tick(60)
+
+        if game_over:
+            break
+
 
 if __name__ == "__main__":
     local_dir = os.path.dirname(__file__)
-    config_path = os.path.join(local_dir, 'config-feedforward.txt')
-    run_neat(config_path)
+    config_path = os.path.join(local_dir, 'ffs.txt')
+
+    choice = input("Do you want to load the saved model? (y/n): ")
+    if choice.lower() == 'y':
+        selected_model = input("Please enter the model name: ")  # Prompt for the model name
+        run_neat(config_path, load_winner=True)
+    else:
+        run_neat(config_path, load_winner=False)
